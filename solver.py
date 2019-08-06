@@ -10,6 +10,12 @@ from prepro import READ
 from model import BiDAF, EMA
 from util import evaluate
 
+from apex import amp
+    
+# Todo: APEX, Evaluate -> turn off dropout
+
+APEX_AVAILABLE = False 
+
 logging.getLogger().setLevel(logging.INFO)
 
 class SOLVER():
@@ -22,7 +28,11 @@ class SOLVER():
         char_size    =  len(self.data.CHAR.vocab)
 
         self.model   =  BiDAF(self.args, char_size, glove).to(self.device)
+        self.optimizer = optim.Adadelta(self.model.parameters(), lr=self.args.Learning_Rate)
         self.ema     =  EMA(self.args.Exp_Decay_Rate)
+
+        if APEX_AVAILABLE: # Mixed Precision
+            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level = 'O2')
 
         for name, param in self.model.named_parameters():
             if param.requires_grad:
@@ -32,7 +42,6 @@ class SOLVER():
 
     def train(self):
 
-        optimizer = optim.Adadelta(self.parameters, lr=self.args.Learning_Rate)
         criterion = nn.CrossEntropyLoss()
 
         self.model.train()
@@ -47,40 +56,45 @@ class SOLVER():
         loss = 0.0
 
         for epoch in range(self.args.Epoch):    
+
+            self.model.train()
+
             for i, batch in enumerate(self.data.train_iter):
-                p1, p2 = self.model(batch)
-                batch_loss = criterion(p1, batch.start_idx) + criterion(p2, batch.end_idx)
-                loss = float(batch_loss)
-                batch_loss.backward()
-                optimizer.step()
+                sum_loss = 0
+                for _ in range(3): # accumulating gradient
+                    p1, p2 = self.model(batch)
+                    batch_loss = criterion(p1, batch.start_idx) + criterion(p2, batch.end_idx)
+
+                    if APEX_AVAILABLE:
+                        with amp.scale_loss(batch_loss, self.optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        batch_loss.backward()
+                    sum_loss += batch_loss.item()
+
+                self.optimizer.step()
+
                 del p1, p2, batch_loss
 
                 for name, param in self.model.named_parameters():
                     if param.requires_grad:
                         self.ema.update(name, param.data)
 
-                self.model.zero_grad()
+                self.optimizer.zero_grad()
 
                 logging.info("Epoch [{}/{}] Step [{}/{}] Train Loss {}".format(epoch+1, self.args.Epoch, \
                                                                                i+1, int(num_batches) +1, round(loss,3)))
-                if (i+1) % 700 == 0:
-                    dev_em, dev_f1 = self.evaluate()
-                    logging.info("Epoch [{}/{}] Dev EM {} Dev F1 {}".format(epoch + 1, self.args.Epoch, \
-                                                                            round(dev_em,3), round(dev_f1,3)))
-                    self.model.train()
 
+            dev_em, dev_f1 = self.evaluate()
+            logging.info("Epoch [{}/{}] Dev EM {} Dev F1 {}".format(epoch + 1, self.args.Epoch, \
+                                                                    round(dev_em,3), round(dev_f1,3)))
             if dev_f1 > max_dev_f1:
                 max_dev_f1 = dev_f1
                 max_dev_em = dev_em
-                # best_model = copy.deepcopy(self.model)
-            
 
-        # if not os.path.exists('../models'):
-        #     os.mkdir("../models")
-        #     torch.save(best_model, "../models/best_model.pt")
-
+            self.model.train()
+    
         logging.info('Max Dev EM: {} Max Dev F1: {}'.format(round(max_dev_em, 3), round(max_dev_f1, 3)))
-
 
     def evaluate(self): 
 
@@ -96,7 +110,7 @@ class SOLVER():
                 temp_ema.register(name, param.data)
                 param.data.copy_(self.ema.get(name))
     
-        with torch.set_grad_enabled(False):
+        with torch.no_grad():
             for _ , batch in enumerate(self.data.dev_iter):
 
                 p1, p2 = self.model(batch)

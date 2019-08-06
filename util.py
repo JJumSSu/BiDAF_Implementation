@@ -54,7 +54,7 @@ def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
 
 
 def evaluate(args, predictions):
-    path = '../data/'
+    path = '../data/squad/'
     f1 = exact_match = total = 0
     with open(path + args.Dev_File) as d:
         dev_json = json.load(d)

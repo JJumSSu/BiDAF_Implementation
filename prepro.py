@@ -2,12 +2,12 @@ import json
 import os
 import torch
 import logging
-
 from torchtext import data
 from torchtext import datasets
 from torchtext.vocab import GloVe
-
 from util import word_tokenize
+
+# Todo : Batch Sort by Length -> considering memory
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -15,19 +15,19 @@ class READ():
 
     def __init__(self, args):
 
-        path = '../data'
+        path = '../data/squad'
 
         logging.info("Preprocessing Data - First Phase  :: Reading And Transforming")
 
-        # self.preprocess('{}/{}'.format(path, args.Train_File))
-        # self.preprocess('{}/{}'.format(path, args.Dev_File))
+        self.preprocess('{}/{}'.format(path, args.Train_File))
+        self.preprocess('{}/{}'.format(path, args.Dev_File))
 
         self.RAW = data.RawField(); self.RAW.is_target = False
 
         self.CHAR_NESTING  = data.Field(batch_first = True, tokenize = list, lower=True)
         self.CHAR  = data.NestedField(self.CHAR_NESTING, tokenize = word_tokenize)
-        self.WORD  = data.Field(batch_first=True, tokenize = word_tokenize, lower=True, include_lengths=True)
-        self.LABEL = data.Field(sequential=False, unk_token=None, use_vocab=False)
+        self.WORD  = data.Field(batch_first = True, tokenize = word_tokenize, lower = True, include_lengths = True)
+        self.LABEL = data.Field(sequential = False, unk_token = None, use_vocab = False)
 
         dict_fields = {'qid'      : ('qid', self.RAW),
                        'start_idx': ('start_idx', self.LABEL),
@@ -52,11 +52,9 @@ class READ():
 
         device = torch.device("cuda:{}".format(args.GPU) if torch.cuda.is_available() else "cpu")
         
-        self.train_iter = data.BucketIterator(dataset = self.train, batch_size = args.Batch_Size, \
-                                              sort_key = lambda x: len(x.c_word), device = device)
+        self.train_iter = data.BucketIterator(dataset = self.train, batch_size = args.Batch_Size, device = device)
         
-        self.dev_iter = data.BucketIterator(dataset = self.dev, batch_size = args.Batch_Size, \
-                                            sort_key = lambda x: len(x.c_word), device = device)
+        self.dev_iter   = data.BucketIterator(dataset = self.dev, batch_size = args.Batch_Size, device = device)
 
 
     def preprocess(self, path):
@@ -92,7 +90,6 @@ class READ():
                                         l += 1
                                     else:
                                         break
-                                # exceptional cases
                                 if t[0] == '"' and context[l:l + 2] == '\'\'':
                                     t = '\'\'' + t[1:]
                                 elif t == '"' and context[l:l + 2] == '\'\'':
@@ -113,7 +110,7 @@ class READ():
                                                 ('start_idx', s_idx),
                                                 ('end_idx', e_idx)]))
 
-        with open('{path}l', 'w', encoding='utf-8') as f:
+        with open('{}l'.format(path), 'w', encoding='utf-8') as f:
             for line in output:
                 json.dump(line, f)
                 print('', file=f)

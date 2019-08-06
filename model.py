@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Todo : Memory efficient implementation, dropout, initialization
+# LSTM Dropout First Layer?, memory efficient
 
 class BiDAF(nn.Module):
     def __init__(self, args, char_vocab_size, glove):
@@ -11,10 +11,10 @@ class BiDAF(nn.Module):
 
         self.args = args
         self.device     =  torch.device("cuda:{}".format(self.args.GPU) if torch.cuda.is_available() else "cpu")
-        self.char_emb   = nn.Embedding(char_vocab_size, self.args.Char_Dim, padding_idx=1) 
-        self.char_conv  = nn.Conv2d(1, self.args.Char_Channel_Num, (self.args.Char_Channel_Width, self.args.Char_Dim))
-        self.word_emb   = nn.Embedding.from_pretrained(glove, freeze = True) 
-        self.hidden_dim = self.args.Char_Channel_Num + self.args.Word_Dim 
+        self.char_emb   =  nn.Embedding(char_vocab_size, self.args.Char_Dim, padding_idx=1) 
+        self.char_conv  =  nn.Conv2d(1, self.args.Char_Channel_Num, (self.args.Char_Channel_Width, self.args.Char_Dim))
+        self.word_emb   =  nn.Embedding.from_pretrained(glove, freeze = True) 
+        self.hidden_dim =  self.args.Char_Channel_Num + self.args.Word_Dim 
 
         self.highway = Highway(self.hidden_dim, self.hidden_dim, 2)
 
@@ -60,7 +60,7 @@ class BiDAF(nn.Module):
             return x
 
 
-        def coattention(c, q): # Todo: memory efficient
+        def coattention(c, q): # Todo: memory efficient / cat -> assign
 
                 shape = (c.size(0), c.size(1), q.size(1), c.size(2))
 
@@ -90,14 +90,11 @@ class BiDAF(nn.Module):
                 
                 out = torch.cat([c, U, torch.mul(c, U), torch.mul(c, h_t)], dim=2)
                 
-
                 return out
 
 
         def output_layer(g, m):
     
-            # hidden = [torch.randn(2, batch_size, self.hidden_dim).to(self.device)] * 2
-
             p1 = F.log_softmax(self.dropout(self.p1_weight(torch.cat([g, m], dim=2))).squeeze(), dim =1)
             m2, _ = self.output_LSTM(m)
             p2 = F.log_softmax(self.dropout(self.p2_weight(torch.cat([g, m2], dim = 2))).squeeze(), dim = 1)
