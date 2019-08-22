@@ -13,9 +13,9 @@ def main():
 
     parser.add_argument('--Char_Channel_Width', default = 5  , type=int)
     parser.add_argument('--Char_Channel_Num'  , default = 100, type=int)
-    parser.add_argument('--Max_Token_Length'  , default = 500, type=int)
+    parser.add_argument('--Max_Token_Length'  , default = 450, type=int)
     
-    parser.add_argument('--Batch_Size'    , default = 20   , type=int)
+    parser.add_argument('--Batch_Size'    , default = 60   , type=int)
     parser.add_argument('--Epoch'         , default = 12   , type=int)
     parser.add_argument('--Dropout'       , default = 0.2  , type=float)
     parser.add_argument('--EMA'           , default = 0.999, type=float)

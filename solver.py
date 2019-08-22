@@ -5,14 +5,13 @@ import json
 
 import torch
 from torch import nn, optim
-
 from prepro import READ
 from model import BiDAF, EMA
 from util import evaluate
 
 from apex import amp
     
-# Todo: APEX, Evaluate -> turn off dropout
+# Todo: APEX, Evaluate -> turn off dropout, evaluate check
 
 APEX_AVAILABLE = False 
 
@@ -42,7 +41,8 @@ class SOLVER():
 
     def train(self):
 
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.NLLLoss()
+        criterion = criterion.to(self.device)
 
         self.model.train()
 
@@ -59,41 +59,52 @@ class SOLVER():
 
             self.model.train()
 
-            for i, batch in enumerate(self.data.train_iter):
-                sum_loss = 0
-                for _ in range(3): # accumulating gradient
-                    p1, p2 = self.model(batch)
-                    batch_loss = criterion(p1, batch.start_idx) + criterion(p2, batch.end_idx)
+            for i, batch in enumerate(self.data.train_iter):                
+                
+                i += 1
+                p1, p2 = self.model(batch)
+                batch_loss = criterion(p1, batch.start_idx.to(self.device)) + criterion(p2, batch.end_idx.to(self.device))
 
-                    if APEX_AVAILABLE:
-                        with amp.scale_loss(batch_loss, self.optimizer) as scaled_loss:
-                            scaled_loss.backward()
-                    else:
-                        batch_loss.backward()
-                    sum_loss += batch_loss.item()
+                if APEX_AVAILABLE:
+                    with amp.scale_loss(batch_loss, self.optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    batch_loss.backward()
+                loss = batch_loss.item()
 
                 self.optimizer.step()
-
                 del p1, p2, batch_loss
 
                 for name, param in self.model.named_parameters():
                     if param.requires_grad:
                         self.ema.update(name, param.data)
 
-                self.optimizer.zero_grad()
+                self.model.zero_grad()
 
                 logging.info("Epoch [{}/{}] Step [{}/{}] Train Loss {}".format(epoch+1, self.args.Epoch, \
-                                                                               i+1, int(num_batches) +1, round(loss,3)))
+                                                                               i, int(num_batches) +1, round(loss,3)))
 
+                if epoch > 7:
+                    if i % 100 == 0:
+                        dev_em, dev_f1 = self.evaluate()
+                        logging.info("Epoch [{}/{}] Dev EM {} Dev F1 {}".format(epoch + 1, self.args.Epoch, \
+                                                                                        round(dev_em,3), round(dev_f1,3)))
+                        self.model.train()
+
+                        if dev_f1 > max_dev_f1:
+                            max_dev_f1 = dev_f1
+                            max_dev_em = dev_em
+
+        
             dev_em, dev_f1 = self.evaluate()
             logging.info("Epoch [{}/{}] Dev EM {} Dev F1 {}".format(epoch + 1, self.args.Epoch, \
-                                                                    round(dev_em,3), round(dev_f1,3)))
+                                                                               round(dev_em,3), round(dev_f1,3)))
+            self.model.train()
+
             if dev_f1 > max_dev_f1:
                 max_dev_f1 = dev_f1
                 max_dev_em = dev_em
 
-            self.model.train()
-    
         logging.info('Max Dev EM: {} Max Dev F1: {}'.format(round(max_dev_em, 3), round(max_dev_f1, 3)))
 
     def evaluate(self): 

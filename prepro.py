@@ -6,8 +6,9 @@ from torchtext import data
 from torchtext import datasets
 from torchtext.vocab import GloVe
 from util import word_tokenize
+import pdb
 
-# Todo : Batch Sort by Length -> considering memory
+# Static?
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -39,7 +40,6 @@ class READ():
         
         self.train, self.dev = data.TabularDataset.splits(path=path, train=args.Train_File + 'l',  \
                                                           validation=args.Dev_File + 'l', format='json', fields=dict_fields)
-        
         if args.Max_Token_Length > 0:
             self.train.examples = [e for e in self.train.examples if len(e.c_word) <= args.Max_Token_Length]
 
@@ -52,9 +52,9 @@ class READ():
 
         device = torch.device("cuda:{}".format(args.GPU) if torch.cuda.is_available() else "cpu")
         
-        self.train_iter = data.BucketIterator(dataset = self.train, batch_size = args.Batch_Size, device = device)
+        self.train_iter = data.BucketIterator(dataset = self.train, batch_size = args.Batch_Size) # sort_key = lambda x : len(x.c_word)
         
-        self.dev_iter   = data.BucketIterator(dataset = self.dev, batch_size = args.Batch_Size, device = device)
+        self.dev_iter   = data.BucketIterator(dataset = self.dev, batch_size = 10)
 
 
     def preprocess(self, path):

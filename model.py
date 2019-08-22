@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# LSTM Dropout First Layer?, memory efficient
 
 class BiDAF(nn.Module):
     def __init__(self, args, char_vocab_size, glove):
@@ -18,28 +17,23 @@ class BiDAF(nn.Module):
 
         self.highway = Highway(self.hidden_dim, self.hidden_dim, 2)
 
-        self.context_LSTM = nn.LSTM(input_size = self.hidden_dim,
-                                    hidden_size = self.hidden_dim,
-                                    bidirectional = True,
-                                    batch_first = True,
-                                    dropout = self.args.Dropout)
+        self.context_LSTM = Contextualized_LSTM(input_dim  = self.hidden_dim,
+                                                hidden_dim = self.hidden_dim,
+                                                dropout = self.args.Dropout)
 
-        self.att_weight_alpha = nn.Linear(self.hidden_dim * 6, 1)
+        self.att_weight_c = nn.Linear(self.hidden_dim * 2, 1)
+        self.att_weight_q = nn.Linear(self.hidden_dim * 2, 1)
+        self.att_weight_cq = nn.Linear(self.hidden_dim * 2, 1)
 
-        self.modeling_LSTM =  nn.LSTM(input_size = self.hidden_dim * 8,
-                                      hidden_size = self.hidden_dim,
-                                      bidirectional = True,
-                                      batch_first = True,
-                                      num_layers = 2,
-                                      dropout = self.args.Dropout)
+        self.modeling_LSTM =  Modeling_LSTM(input_dim  = self.hidden_dim * 8,
+                                            hidden_dim = self.hidden_dim,
+                                            dropout = self.args.Dropout)
 
         self.p1_weight = nn.Linear(self.hidden_dim * 10, 1)
         self.p2_weight = nn.Linear(self.hidden_dim * 10, 1)
         
-        self.output_LSTM = nn.LSTM(input_size = self.hidden_dim * 2,
-                                   hidden_size = self.hidden_dim,
-                                   bidirectional = True,
-                                   batch_first = True,
+        self.output_LSTM = Output_LSTM(input_dim  = self.hidden_dim * 2,
+                                   hidden_dim = self.hidden_dim,
                                    dropout = self.args.Dropout)
 
         self.dropout = nn.Dropout(p = self.args.Dropout)
@@ -59,74 +53,114 @@ class BiDAF(nn.Module):
 
             return x
 
+        def att_flow_layer(c, q):
 
-        def coattention(c, q): # Todo: memory efficient / cat -> assign
+            c_len = c.size(1)
+            q_len = q.size(1)
 
-                shape = (c.size(0), c.size(1), q.size(1), c.size(2))
+            cq = []
 
-                ct  = c.unsqueeze(2).expand(shape)
-                qt  = q.unsqueeze(1).expand(shape)
-                cq  = torch.mul(ct, qt)
+            for i in range(q_len):
+                #(batch, 1, hidden_size * 2)
+                qi = q.select(1, i).unsqueeze(1)
+                #(batch, c_len, 1)
+                ci = self.att_weight_cq(c * qi).squeeze()
+                cq.append(ci)
+            # (batch, c_len, q_len)
+            cq = torch.stack(cq, dim=-1)
+
+            # (batch, c_len, q_len)
+            s = self.att_weight_c(c).expand(-1, -1, q_len) + \
+                self.att_weight_q(q).permute(0, 2, 1).expand(-1, c_len, -1) + \
+                cq
+
+            # (batch, c_len, q_len)
+            a = F.softmax(s, dim=2)
+            # (batch, c_len, q_len) * (batch, q_len, hidden_size * 2) -> (batch, c_len, hidden_size * 2)
+            c2q_att = torch.bmm(a, q)
+            # (batch, 1, c_len)
+            b = F.softmax(torch.max(s, dim=2)[0], dim=1).unsqueeze(1)
+            # (batch, 1, c_len) * (batch, c_len, hidden_size * 2) -> (batch, hidden_size * 2)
+            q2c_att = torch.bmm(b, c).squeeze()
+            # (batch, c_len, hidden_size * 2) (tiled)
+            q2c_att = q2c_att.unsqueeze(1).expand(-1, c_len, -1)
+            # q2c_att = torch.stack([q2c_att] * c_len, dim=1)
+
+            # (batch, c_len, hidden_size * 8)
+            x = torch.cat([c, c2q_att, c * c2q_att, c * q2c_att], dim=-1)
+            
+            return x
+
+
+        # def coattention(c, q): 
+
+        #         shape = (c.size(0), c.size(1), q.size(1), c.size(2))
+
+        #         ct  = c.unsqueeze(2).expand(shape)
+        #         qt  = q.unsqueeze(1).expand(shape)
+        #         cq  = torch.mul(ct, qt)
                 
-                S   = torch.cat([ct, qt, cq], dim = 3)
-                del ct, qt, cq
+        #         S   = torch.cat([ct, qt, cq], dim = 3)
+        #         del ct, qt, cq
 
-                S   = self.att_weight_alpha(S).squeeze() # batch x c_seq_len x q_seq_len
+        #         S   = self.att_weight_alpha(S).squeeze() # batch x c_seq_len x q_seq_len
                 
-                S1  = F.softmax(S, dim = 2)
-                U   = torch.bmm(S1, q)
+        #         S1  = F.softmax(S, dim = 2)
+        #         U   = torch.bmm(S1, q)
 
-                del S1
+        #         del S1
 
-                S2  = F.softmax(torch.max(S, dim = 2)[0], dim = 1).unsqueeze(dim = 1)
+        #         S2  = F.softmax(torch.max(S, dim = 2)[0], dim = 1).unsqueeze(dim = 1)
                 
-                del S
+        #         del S
 
-                h_t = torch.bmm(S2, c).expand(c.size(0), c.size(1), c.size(2))
+        #         h_t = torch.bmm(S2, c).expand(c.size(0), c.size(1), c.size(2))
                 
-                del S2
+        #         del S2
  
-                h_t = torch.mul(c, h_t)
+        #         h_t = torch.mul(c, h_t)
                 
-                out = torch.cat([c, U, torch.mul(c, U), torch.mul(c, h_t)], dim=2)
+        #         out = torch.cat([c, U, torch.mul(c, U), torch.mul(c, h_t)], dim=2)
+
                 
-                return out
+        #         return out
 
-
+            
         def output_layer(g, m):
     
             p1 = F.log_softmax(self.dropout(self.p1_weight(torch.cat([g, m], dim=2))).squeeze(), dim =1)
-            m2, _ = self.output_LSTM(m)
+            m2 = self.output_LSTM(m)
             p2 = F.log_softmax(self.dropout(self.p2_weight(torch.cat([g, m2], dim = 2))).squeeze(), dim = 1)
     
             return p1, p2
     
         # Input Represenation
 
-        c_char = char_emb(batch.c_char)
-        q_char = char_emb(batch.q_char)
+        c_char = char_emb(batch.c_char.to(self.device))
+        q_char = char_emb(batch.q_char.to(self.device))
 
-        c_word = self.word_emb(batch.c_word[0])
-        q_word = self.word_emb(batch.q_word[0])
+        c_word = self.word_emb(batch.c_word[0].to(self.device))
+        q_word = self.word_emb(batch.q_word[0].to(self.device))
 
         # Highway network
 
         c = self.highway(torch.cat([c_char, c_word], dim = 2))
         q = self.highway(torch.cat([q_char, q_word], dim = 2))
+
         del c_char, c_word, q_char, q_word
 
         # Contextual Embedding Layer
 
-        c, _ = self.context_LSTM(c) 
-        q, _ = self.context_LSTM(q)
+        c = self.context_LSTM(c) 
+        q = self.context_LSTM(q)
 
         # Attention Flow
         
-        g = coattention(c,q)
+        g = att_flow_layer(c,q)
 
         # Modeling Layer
         
-        m, _ = self.modeling_LSTM(g)
+        m = self.modeling_LSTM(g)
                 
         # Output Layer 
         
@@ -135,12 +169,60 @@ class BiDAF(nn.Module):
         return p1, p2
 
 
+class Contextualized_LSTM(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, dropout):
+        super(Contextualized_LSTM, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, bidirectional = True, batch_first = True)
+        self.dropout = nn.Dropout(p = dropout)
+
+    def forward(self, x):
+
+        out, _ = self.lstm(x)
+        out = self.dropout(out)
+
+        return out
+
+
+class Modeling_LSTM(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, dropout):
+        super(Modeling_LSTM, self).__init__()
+        self.lstm_1 = nn.LSTM(input_dim, hidden_dim, bidirectional = True, batch_first = True)
+        self.lstm_2 = nn.LSTM(input_dim, hidden_dim, bidirectional = True, batch_first = True)
+        self.dropout = nn.Dropout(p = dropout)
+
+    def forward(self, x):
+
+        out, _ = self.lstm_1(x)
+        out = self.dropout(out)
+        out, _ = self.lstm_2(x)
+        out = self.dropout(out)
+
+        return out
+
+
+class Output_LSTM(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, dropout):
+        super(Output_LSTM, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, bidirectional = True, batch_first = True)
+        self.dropout = nn.Dropout(p = dropout)
+
+    def forward(self, x):
+
+        out, _ = self.lstm(x)
+        out = self.dropout(out)
+
+        return out
+
+
 class Highway(nn.Module):
+    
     def __init__(self, input_size, output_size, num_layers):
 
         super(Highway, self).__init__()
         self.num_layers = num_layers
-        self.nonlinear  = nn.ModuleList([nn.Linear(input_size, output_size) for _ in range(num_layers)])
         self.linear     = nn.ModuleList([nn.Linear(input_size, output_size) for _ in range(num_layers)])
         self.gate       = nn.ModuleList([nn.Linear(input_size, output_size) for _ in range(num_layers)])
 
@@ -149,15 +231,15 @@ class Highway(nn.Module):
 
         for layer in range(self.num_layers):
             gate      = torch.sigmoid(self.gate[layer](x))
-            nonlinear = F.relu(self.nonlinear[layer](x))
-            linear    = self.linear[layer](x)
+            nonlinear = F.relu(self.linear[layer](x))
 
-            x = gate * nonlinear + (1 - gate) * linear
+            x = gate * nonlinear + (1 - gate) * x
 
         return x
 
 
 class EMA():
+
     def __init__(self, mu):
         self.mu = mu
         self.shadow = {}
@@ -172,3 +254,4 @@ class EMA():
         assert name in self.shadow
         new_average = (1.0 - self.mu) * x + self.mu * self.shadow[name]
         self.shadow[name] = new_average.clone()
+    
